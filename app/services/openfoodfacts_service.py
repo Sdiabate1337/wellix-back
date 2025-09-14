@@ -16,7 +16,7 @@ class OpenFoodFactsService:
     """OpenFoodFacts API service for product data enrichment."""
     
     def __init__(self):
-        self.base_url = "https://world.openfoodfacts.org/api/v2"
+        self.base_url = "https://world.openfoodfacts.org/api/v0"
         self.user_agent = settings.openfoodfacts_user_agent
         self.timeout = 10.0
     

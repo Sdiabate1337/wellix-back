@@ -3,7 +3,7 @@ Main API v1 router that includes all endpoint routers.
 """
 
 from fastapi import APIRouter
-from app.api.v1 import auth, health_profiles, analysis, chat, websocket
+from app.api.v1 import auth, health_profiles, analysis, chat, websocket, llm_config
 
 api_router = APIRouter()
 
@@ -36,4 +36,10 @@ api_router.include_router(
     websocket.router,
     prefix="/ws",
     tags=["websocket"]
+)
+
+api_router.include_router(
+    llm_config.router,
+    prefix="/llm",
+    tags=["llm-configuration"]
 )

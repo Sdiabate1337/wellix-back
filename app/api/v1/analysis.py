@@ -14,6 +14,7 @@ from app.db.database import get_async_session
 from app.db.models.user import User
 from app.workflows.food_analysis_workflow import food_analysis_workflow
 from app.models.health import UserHealthContext, NutritionData
+from app.services.health_analyzers.analyzer_factory import LLMIntegrationLevel
 from app.cache.cache_manager import cache_manager
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -33,13 +34,22 @@ async def scan_food_product(
     db: AsyncSession = Depends(get_async_session)
 ):
     """
-    Scan and analyze food product from image or barcode.
+    Scan and analyze food product from image or barcode with intelligent AI enhancement.
     
     This endpoint orchestrates the complete food analysis workflow:
     1. OCR extraction from uploaded image
     2. Barcode lookup in OpenFoodFacts
-    3. Multi-profile health analysis
+    3. Multi-profile health analysis with context-aware AI enhancement
     4. Personalized recommendations generation
+    
+    The system automatically determines optimal AI enhancement based on:
+    - Product risk level and complexity
+    - User health condition severity
+    - Individual guidance needs
+    
+    Args:
+        image: Food product image (nutrition label)
+        barcode: Optional barcode for direct lookup
     """
     try:
         # Validate image file
@@ -58,14 +68,24 @@ async def scan_food_product(
                 detail="Image file too large. Maximum size is 10MB."
             )
         
+        # Validate integration level
+        try:
+            llm_integration_level = LLMIntegrationLevel(integration_level)
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid integration_level. Must be one of: {[level.value for level in LLMIntegrationLevel]}"
+            )
+        
         # Get user health context
         user_context = await _get_user_health_context(current_user.id, db)
         
-        # Execute workflow
+        # Execute workflow with LLM integration
         workflow_result = await food_analysis_workflow.process_food_analysis(
             image_data=image_data,
             barcode=barcode,
-            user_context=user_context
+            user_context=user_context,
+            integration_level=llm_integration_level.value
         )
         
         # Check for workflow errors
@@ -76,24 +96,32 @@ async def scan_food_product(
                 detail="Analysis failed. Please try again with a clearer image."
             )
         
-        # Save analysis to database
-        analysis_id = await _save_analysis_result(workflow_result, current_user.id, db)
+        # Save analysis to database with LLM integration data
+        analysis_id = await _save_analysis_result(workflow_result, current_user.id, db, integration_level)
         
-        # Prepare response
+        # Prepare enhanced response with LLM data
+        health_analysis = workflow_result.get("health_analysis", {})
+        is_enhanced = health_analysis.get("enhanced_analysis", False)
+        
         response_data = {
             "analysis_id": str(analysis_id),
             "product_name": workflow_result.get("nutrition_data", {}).get("product_name", "Unknown Product"),
             "overall_score": workflow_result.get("overall_score", 0),
             "safety_level": workflow_result.get("safety_level", "unknown"),
             "recommendations": workflow_result.get("recommendations", []),
-            "health_analysis": workflow_result.get("health_analysis", {}),
+            "health_analysis": health_analysis,
             "confidence_score": workflow_result.get("confidence_score", 0.5),
             "processing_time_ms": workflow_result.get("processing_time_ms", 0),
             "chat_context": workflow_result.get("chat_context", {}),
-            "analysis_summary": workflow_result.get("analysis_summary", "")
+            "analysis_summary": workflow_result.get("analysis_summary", ""),
+            # Enhanced LLM integration data
+            "enhanced_analysis": is_enhanced,
+            "integration_level": integration_level,
+            "llm_insights": _extract_llm_insights_summary(health_analysis) if is_enhanced else None,
+            "confidence_metrics": workflow_result.get("chat_context", {}).get("confidence_metrics", {}) if is_enhanced else None
         }
         
-        logger.info(f"Food analysis completed for user {current_user.id}: {analysis_id}")
+        logger.info(f"{'Enhanced' if is_enhanced else 'Basic'} food analysis completed for user {current_user.id}: {analysis_id} (level: {integration_level})")
         
         return JSONResponse(
             status_code=status.HTTP_200_OK,
@@ -108,6 +136,61 @@ async def scan_food_product(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Analysis failed due to an internal error. Please try again."
         )
+
+
+def _extract_llm_insights_summary(health_analysis: Dict[str, Any]) -> Dict[str, Any]:
+    """Extract LLM insights summary from health analysis results."""
+    llm_summary = {
+        "total_profiles_analyzed": 0,
+        "profiles_with_llm_insights": 0,
+        "average_score_adjustment": 0.0,
+        "key_insights": [],
+        "personalized_recommendations": []
+    }
+    
+    profile_results = health_analysis.get("profile_results", {})
+    if not profile_results:
+        return llm_summary
+    
+    total_adjustment = 0.0
+    profiles_with_insights = 0
+    
+    for profile_type, result in profile_results.items():
+        llm_summary["total_profiles_analyzed"] += 1
+        
+        llm_insights = result.get("llm_insights", {})
+        if llm_insights and "error" not in llm_insights:
+            profiles_with_insights += 1
+            
+            # Extract score adjustment
+            adjustment = llm_insights.get("score_adjustment", 0)
+            total_adjustment += adjustment
+            
+            # Extract key insights
+            risk_factors = llm_insights.get("risk_factors", [])
+            if risk_factors:
+                llm_summary["key_insights"].extend(risk_factors[:2])
+            
+            # Extract personalized recommendations
+            personalized_insights = result.get("personalized_insights", {})
+            if personalized_insights.get("timing_recommendations", {}).get("best"):
+                timing = personalized_insights["timing_recommendations"]["best"]
+                llm_summary["personalized_recommendations"].append(f"Best timing: {timing}")
+            
+            if personalized_insights.get("alternatives"):
+                alternatives = personalized_insights["alternatives"][:2]
+                if alternatives:
+                    llm_summary["personalized_recommendations"].append(f"Alternatives: {', '.join(alternatives)}")
+    
+    llm_summary["profiles_with_llm_insights"] = profiles_with_insights
+    if profiles_with_insights > 0:
+        llm_summary["average_score_adjustment"] = round(total_adjustment / profiles_with_insights, 1)
+    
+    # Limit arrays to prevent large responses
+    llm_summary["key_insights"] = llm_summary["key_insights"][:5]
+    llm_summary["personalized_recommendations"] = llm_summary["personalized_recommendations"][:5]
+    
+    return llm_summary
 
 
 @router.get("/analysis/{analysis_id}")
@@ -337,7 +420,7 @@ async def _get_user_health_context(user_id: str, db: AsyncSession) -> UserHealth
         )
 
 
-async def _save_analysis_result(workflow_result: Dict[str, Any], user_id: str, db: AsyncSession) -> uuid.UUID:
+async def _save_analysis_result(workflow_result: Dict[str, Any], user_id: str, db: AsyncSession, integration_level: str = "algorithmic_only") -> uuid.UUID:
     """Save analysis result to database."""
     try:
         nutrition_data = workflow_result.get("nutrition_data", {})

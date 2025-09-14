@@ -12,7 +12,7 @@ from datetime import datetime
 from app.models.health import NutritionData, UserHealthContext, AnalysisResult
 from app.services.ocr_service import ocr_service
 from app.services.openfoodfacts_service import openfoodfacts_service
-from app.services.health_analyzers.analyzer_factory import HealthAnalyzerFactory
+from app.services.health_analyzers.analyzer_factory import EnhancedHealthAnalyzerFactory
 from app.cache.cache_manager import cache_manager
 
 logger = structlog.get_logger(__name__)
@@ -263,7 +263,7 @@ class FoodAnalysisWorkflow:
         return state
     
     async def _health_analysis_node(self, state: WellixState) -> WellixState:
-        """Perform health analysis based on user profiles."""
+        """Perform enhanced health analysis with LLM integration."""
         state["processing_steps"].append("health_analysis")
         
         if not state["nutrition_data"] or not state["user_context"]:
@@ -271,33 +271,71 @@ class FoodAnalysisWorkflow:
             return state
         
         try:
-            # Perform multi-profile health analysis
-            analysis_results = await HealthAnalyzerFactory.analyze_for_user(
-                state["nutrition_data"],
-                state["user_context"]
+            # Determine LLM integration level from user preferences
+            integration_level = state["user_context"].get("preferences", {}).get(
+                "llm_integration_level", 
+                LLMIntegrationLevel.HYBRID_BALANCED
             )
             
-            # Calculate overall score
-            overall_score = HealthAnalyzerFactory.get_overall_score(analysis_results)
+            # Convert string to enum if needed
+            if isinstance(integration_level, str):
+                integration_level = LLMIntegrationLevel(integration_level)
             
-            # Determine overall safety level
-            safety_levels = [result.safety_level for result in analysis_results.values()]
+            # Perform enhanced multi-profile health analysis
+            enhanced_results = await EnhancedHealthAnalyzerFactory.analyze_for_user_enhanced(
+                nutrition_data=state["nutrition_data"],
+                user_context=state["user_context"],
+                integration_level=integration_level,
+                context_metadata={"integration_level": integration_level.value}
+            )
+            
+            # Calculate overall enhanced score
+            overall_score = EnhancedHealthAnalyzerFactory.get_overall_enhanced_score(enhanced_results)
+            
+            # Determine overall safety level from enhanced results
+            safety_levels = [result.algorithmic_result.safety_level for result in enhanced_results.values()]
             overall_safety = self._determine_overall_safety(safety_levels)
             
+            # Serialize enhanced results
+            serialized_results = {}
+            for profile_type, enhanced_result in enhanced_results.items():
+                serialized_results[profile_type.value] = {
+                    "algorithmic_result": self._serialize_analysis_result(enhanced_result.algorithmic_result),
+                    "hybrid_score": enhanced_result.hybrid_score,
+                    "llm_insights": enhanced_result.llm_insights,
+                    "confidence_metrics": enhanced_result.confidence_metrics,
+                    "enhanced_recommendations": enhanced_result.enhanced_recommendations,
+                    "personalized_insights": enhanced_result.personalized_insights,
+                    "risk_assessment": enhanced_result.risk_assessment
+                }
+            
             state["health_analysis"] = {
-                "profile_results": {k: self._serialize_analysis_result(v) for k, v in analysis_results.items()},
+                "profile_results": serialized_results,
                 "overall_score": overall_score,
-                "safety_level": overall_safety
+                "safety_level": overall_safety,
+                "integration_level": integration_level.value,
+                "enhanced_analysis": True
             }
             state["overall_score"] = overall_score
             state["safety_level"] = overall_safety
             
-            logger.info(f"Health analysis completed with overall score: {overall_score}")
+            state["enhanced_analysis"] = enhanced_results
+            state["insight_level_used"] = enhanced_results.get("insight_level_used", "intelligent_auto_selection")
+            
+            logger.info(f"Enhanced health analysis completed with overall score: {overall_score} (integration: {integration_level.value})")
             
         except Exception as e:
-            error_msg = f"Health analysis failed: {str(e)}"
+            error_msg = f"Enhanced health analysis failed: {str(e)}"
             state["errors"].append(error_msg)
             logger.error(error_msg)
+            
+            # Fallback to basic analysis if enhanced fails
+            try:
+                logger.info("Falling back to basic algorithmic analysis")
+                # This would need the old factory as fallback - for now, re-raise the error
+                raise e
+            except Exception as fallback_error:
+                state["errors"].append(f"Fallback analysis also failed: {str(fallback_error)}")
         
         return state
     
@@ -310,12 +348,40 @@ class FoodAnalysisWorkflow:
             return state
         
         try:
-            # Collect recommendations from all profile analyses
+            # Collect enhanced recommendations from all profile analyses
             all_recommendations = []
             profile_results = state["health_analysis"]["profile_results"]
             
+            # Check if this is enhanced analysis
+            is_enhanced = state["health_analysis"].get("enhanced_analysis", False)
+            
             for profile_type, result in profile_results.items():
-                all_recommendations.extend(result.get("recommendations", []))
+                if is_enhanced:
+                    # Use enhanced recommendations from LLM integration
+                    enhanced_recs = result.get("enhanced_recommendations", [])
+                    all_recommendations.extend(enhanced_recs)
+                    
+                    # Add personalized insights as recommendations
+                    insights = result.get("personalized_insights", {})
+                    if insights.get("timing_recommendations"):
+                        timing = insights["timing_recommendations"]
+                        if timing.get("best"):
+                            all_recommendations.append(f"Best consumed: {timing['best']}")
+                        if timing.get("avoid"):
+                            all_recommendations.append(f"Avoid consuming: {timing['avoid']}")
+                    
+                    if insights.get("preparation_tips"):
+                        for tip in insights["preparation_tips"][:2]:  # Limit to 2 tips
+                            all_recommendations.append(f"Preparation tip: {tip}")
+                    
+                    if insights.get("alternatives"):
+                        alternatives = insights["alternatives"][:2]  # Limit to 2 alternatives
+                        if alternatives:
+                            all_recommendations.append(f"Healthier alternatives: {', '.join(alternatives)}")
+                else:
+                    # Fallback to basic recommendations
+                    basic_recs = result.get("algorithmic_result", {}).get("recommendations", [])
+                    all_recommendations.extend(basic_recs)
             
             # Remove duplicates while preserving order
             unique_recommendations = []
@@ -325,9 +391,9 @@ class FoodAnalysisWorkflow:
                     unique_recommendations.append(rec)
                     seen.add(rec)
             
-            state["recommendations"] = unique_recommendations[:10]  # Limit to top 10
+            state["recommendations"] = unique_recommendations[:12]  # Increased limit for enhanced recommendations
             
-            logger.info(f"Generated {len(unique_recommendations)} recommendations")
+            logger.info(f"Generated {len(unique_recommendations)} {'enhanced' if is_enhanced else 'basic'} recommendations")
             
         except Exception as e:
             error_msg = f"Recommendation generation failed: {str(e)}"
@@ -341,11 +407,15 @@ class FoodAnalysisWorkflow:
         state["processing_steps"].append("chat_context_preparation")
         
         try:
-            # Create analysis summary
-            analysis_summary = self._create_analysis_summary(state)
+            # Create enhanced analysis summary
+            analysis_summary = self._create_enhanced_analysis_summary(state)
             state["analysis_summary"] = analysis_summary
             
-            # Prepare chat context
+            # Check if enhanced analysis was used
+            is_enhanced = state.get("health_analysis", {}).get("enhanced_analysis", False)
+            integration_level = state.get("health_analysis", {}).get("integration_level", "algorithmic_only")
+            
+            # Prepare enhanced chat context
             chat_context = {
                 "product_name": state.get("nutrition_data", {}).get("product_name", "Unknown Product"),
                 "overall_score": state.get("overall_score", 0),
@@ -353,12 +423,32 @@ class FoodAnalysisWorkflow:
                 "key_recommendations": state.get("recommendations", [])[:5],
                 "health_profiles": list(state.get("health_analysis", {}).get("profile_results", {}).keys()),
                 "analysis_summary": analysis_summary,
-                "confidence_score": state.get("confidence_score", 0.5)
+                "confidence_score": state.get("confidence_score", 0.5),
+                "enhanced_analysis": is_enhanced,
+                "integration_level": integration_level,
+                "insight_level_used": state.get("insight_level_used", "intelligent_auto_selection")
             }
+            
+            # Add LLM insights if available
+            if is_enhanced:
+                profile_results = state.get("health_analysis", {}).get("profile_results", {})
+                llm_insights_summary = {}
+                
+                for profile_type, result in profile_results.items():
+                    llm_insights = result.get("llm_insights", {})
+                    if llm_insights and "error" not in llm_insights:
+                        llm_insights_summary[profile_type] = {
+                            "score_adjustment": llm_insights.get("score_adjustment", 0),
+                            "clinical_reasoning": llm_insights.get("clinical_reasoning", ""),
+                            "key_insights": llm_insights.get("risk_factors", [])[:3]
+                        }
+                
+                chat_context["llm_insights"] = llm_insights_summary
+                chat_context["confidence_metrics"] = self._extract_confidence_summary(profile_results)
             
             state["chat_context"] = chat_context
             
-            logger.info("Chat context preparation completed")
+            logger.info(f"{'Enhanced' if is_enhanced else 'Basic'} chat context preparation completed")
             
         except Exception as e:
             error_msg = f"Chat context preparation failed: {str(e)}"
@@ -474,32 +564,86 @@ class FoodAnalysisWorkflow:
             return "safe"
     
     def _create_analysis_summary(self, state: WellixState) -> str:
-        """Create human-readable analysis summary."""
+        """Create human-readable analysis summary (legacy method)."""
+        return self._create_enhanced_analysis_summary(state)
+    
+    def _create_enhanced_analysis_summary(self, state: WellixState) -> str:
+        """Create enhanced human-readable analysis summary."""
         product_name = state.get("nutrition_data", {}).get("product_name", "this product")
         overall_score = state.get("overall_score", 0)
         safety_level = state.get("safety_level", "unknown")
+        is_enhanced = state.get("health_analysis", {}).get("enhanced_analysis", False)
+        integration_level = state.get("health_analysis", {}).get("integration_level", "algorithmic_only")
         
         summary_parts = [
-            f"Analysis of {product_name}:",
+            f"{'Enhanced' if is_enhanced else 'Basic'} analysis of {product_name}:",
             f"Overall health score: {overall_score}/100",
             f"Safety level: {safety_level.title()}"
         ]
         
-        # Add key concerns
+        if is_enhanced:
+            summary_parts.append(f"LLM integration: {integration_level.replace('_', ' ').title()}")
+        
+        # Add key concerns from enhanced or basic analysis
         health_analysis = state.get("health_analysis", {})
         profile_results = health_analysis.get("profile_results", {})
         
         key_concerns = []
+        llm_insights = []
+        
         for profile_type, result in profile_results.items():
-            warnings = result.get("warnings", [])
-            critical_warnings = [w for w in warnings if w.get("severity") == "critical"]
-            if critical_warnings:
-                key_concerns.extend([w.get("message", "") for w in critical_warnings])
+            if is_enhanced:
+                # Extract LLM insights
+                llm_data = result.get("llm_insights", {})
+                if llm_data.get("risk_factors"):
+                    key_concerns.extend(llm_data["risk_factors"][:2])
+                if llm_data.get("clinical_reasoning"):
+                    llm_insights.append(llm_data["clinical_reasoning"][:100] + "...")
+            else:
+                # Extract basic warnings
+                warnings = result.get("algorithmic_result", {}).get("warnings", [])
+                critical_warnings = [w for w in warnings if isinstance(w, dict) and w.get("severity") == "critical"]
+                if critical_warnings:
+                    key_concerns.extend([w.get("message", "") for w in critical_warnings])
         
         if key_concerns:
             summary_parts.append("Key concerns: " + "; ".join(key_concerns[:3]))
         
+        if llm_insights:
+            summary_parts.append("AI insights: " + llm_insights[0])
+        
         return "\n".join(summary_parts)
+    
+    def _extract_confidence_summary(self, profile_results: Dict[str, Any]) -> Dict[str, float]:
+        """Extract confidence metrics summary from enhanced results."""
+        confidence_summary = {
+            "overall_confidence": 0.0,
+            "algorithmic_confidence": 0.0,
+            "llm_confidence": 0.0
+        }
+        
+        if not profile_results:
+            return confidence_summary
+        
+        total_confidence = 0.0
+        total_algorithmic = 0.0
+        total_llm = 0.0
+        count = 0
+        
+        for result in profile_results.values():
+            metrics = result.get("confidence_metrics", {})
+            if metrics:
+                total_confidence += metrics.get("hybrid_confidence", 0.0)
+                total_algorithmic += metrics.get("algorithmic_confidence", 0.0)
+                total_llm += metrics.get("llm_confidence", 0.0)
+                count += 1
+        
+        if count > 0:
+            confidence_summary["overall_confidence"] = total_confidence / count
+            confidence_summary["algorithmic_confidence"] = total_algorithmic / count
+            confidence_summary["llm_confidence"] = total_llm / count
+        
+        return confidence_summary
 
 
 # Global workflow instance

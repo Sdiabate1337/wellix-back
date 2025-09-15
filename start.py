@@ -74,10 +74,8 @@ async def initialize_services():
     if not await check_redis_connection():
         logger.warning("Redis connection failed - caching will be disabled")
     
-    # Run migrations
-    if not run_migrations():
-        logger.error("Database migration failed")
-        return False
+    # Skip migrations for now
+    logger.info("Skipping migrations for debugging")
     
     logger.info("All services initialized successfully")
     return True
@@ -89,8 +87,8 @@ def start_development_server():
     
     uvicorn.run(
         "app.main:app",
-        host=settings.host,
-        port=settings.port,
+        host="0.0.0.0",
+        port=8000,
         reload=True,
         reload_dirs=["app"],
         log_level="info",
@@ -106,9 +104,9 @@ def start_production_server():
     
     uvicorn.run(
         "app.main:app",
-        host=settings.host,
-        port=settings.port,
-        workers=settings.workers if hasattr(settings, 'workers') else 1,
+        host="0.0.0.0",
+        port=8000,
+        workers=1,
         log_level="warning",
         access_log=False,
         loop="asyncio"

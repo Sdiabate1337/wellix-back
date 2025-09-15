@@ -19,6 +19,14 @@ from app.services.ai.nutrition_analysis_ai import mock_enhance_nutrition_analysi
 logger = structlog.get_logger(__name__)
 
 
+class LLMIntegrationLevel(Enum):
+    """Public API for LLM integration levels exposed to users."""
+    ALGORITHMIC_ONLY = "algorithmic_only"       # Pure clinical algorithms
+    LLM_ENHANCED = "llm_enhanced"               # Clinical + light AI enhancement
+    HYBRID_BALANCED = "hybrid_balanced"         # Balanced clinical + AI
+    LLM_DOMINANT = "llm_dominant"              # AI-dominant approach
+
+
 class ContextualInsightLevel(Enum):
     """Internal AI enhancement levels - automatically selected based on context."""
     CLINICAL_FOCUS = "clinical_focus"           # Minimal AI, clinical foundation

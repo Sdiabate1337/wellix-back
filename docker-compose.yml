@@ -1,4 +1,4 @@
-version: '3.8'
+
 
 services:
   # PostgreSQL Database
@@ -42,8 +42,8 @@ services:
     environment:
       - DATABASE_URL=postgresql+asyncpg://wellix_user:wellix_password@postgres:5432/wellix
       - REDIS_URL=redis://redis:6379/0
-      - ENVIRONMENT=production
-      - DEBUG=false
+      - ENVIRONMENT=development
+      - DEBUG=true
     ports:
       - "8000:8000"
     depends_on:

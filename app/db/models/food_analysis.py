@@ -76,7 +76,7 @@ class FoodAnalysis(Base):
     
     # Relationships
     user = relationship("User", back_populates="food_analyses")
-    recommendations = relationship("ProductRecommendation", back_populates="analysis", cascade="all, delete-orphan")
+    product_recommendations = relationship("ProductRecommendation", back_populates="analysis", cascade="all, delete-orphan")
     
     def __repr__(self):
         return f"<FoodAnalysis(id={self.id}, product={self.product_name}, score={self.overall_score})>"
@@ -115,7 +115,7 @@ class ProductRecommendation(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     
     # Relationships
-    analysis = relationship("FoodAnalysis", back_populates="recommendations")
+    analysis = relationship("FoodAnalysis", back_populates="product_recommendations")
     
     def __repr__(self):
         return f"<ProductRecommendation(id={self.id}, product={self.product_name}, score={self.recommendation_score})>"

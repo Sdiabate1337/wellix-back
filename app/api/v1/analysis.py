@@ -30,6 +30,7 @@ router = APIRouter()
 async def scan_food_product(
     image: UploadFile = File(...),
     barcode: Optional[str] = Form(None),
+    integration_level: Optional[str] = Form("algorithmic_only"),
     current_user: User = Depends(rate_limit_standard),
     db: AsyncSession = Depends(get_async_session)
 ):
@@ -132,6 +133,138 @@ async def scan_food_product(
         raise
     except Exception as e:
         logger.error(f"Food analysis error for user {current_user.id}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Analysis failed due to an internal error. Please try again."
+        )
+
+
+@router.post("/analyze-nutrition")
+async def analyze_nutrition_data(
+    nutrition_data: Dict[str, Any],
+    barcode: Optional[str] = None,
+    integration_level: Optional[str] = "algorithmic_only",
+    current_user: User = Depends(rate_limit_standard),
+    db: AsyncSession = Depends(get_async_session)
+):
+    """
+    Analyze nutrition data from structured JSON (mobile app pre-processed data).
+    
+    This endpoint is designed for mobile apps that:
+    1. Scan nutrition label with device camera
+    2. Perform OCR extraction on device
+    3. Send structured nutrition data to API for health analysis
+    
+    Workflow:
+    - Mobile app scans → App extracts data → API analyzes health impact
+    
+    Args:
+        nutrition_data: Structured nutrition information from mobile OCR
+        barcode: Optional product barcode
+        integration_level: AI enhancement level (algorithmic_only, llm_enhanced, etc.)
+    """
+    # Store user_id early to avoid lazy loading issues in exception handlers
+    user_id = current_user.id  # Keep as UUID
+    
+    try:
+        # Validate integration level
+        try:
+            llm_integration_level = LLMIntegrationLevel(integration_level)
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid integration_level. Must be one of: {[level.value for level in LLMIntegrationLevel]}"
+            )
+        
+        # Validate nutrition data structure
+        required_fields = ["product_name"]
+        missing_fields = [field for field in required_fields if field not in nutrition_data]
+        if missing_fields:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Missing required fields: {missing_fields}"
+            )
+        
+        # Get user health context
+        user_context = await _get_user_health_context(user_id, db)
+        
+        # Create NutritionData object from provided data
+        from app.models.health import NutritionData
+        
+        nutrition_obj = NutritionData(
+            product_name=nutrition_data.get("product_name", "Unknown Product"),
+            brand=nutrition_data.get("brand"),
+            barcode=barcode or nutrition_data.get("barcode"),
+            serving_size=nutrition_data.get("serving_size", "1 serving"),
+            calories=nutrition_data.get("calories", 0),
+            protein=nutrition_data.get("protein", 0),
+            carbohydrates=nutrition_data.get("carbohydrates", 0),
+            total_fat=nutrition_data.get("total_fat", 0),
+            saturated_fat=nutrition_data.get("saturated_fat"),
+            fiber=nutrition_data.get("fiber"),
+            sugar=nutrition_data.get("sugar"),
+            sodium=nutrition_data.get("sodium"),
+            potassium=nutrition_data.get("potassium"),
+            cholesterol=nutrition_data.get("cholesterol"),
+            ingredients=nutrition_data.get("ingredients", []),
+            allergens=nutrition_data.get("allergens", []),
+            additives=nutrition_data.get("additives", [])
+        )
+        
+        # Execute analysis workflow (skip OCR since data is already structured)
+        # We use the same workflow but pass pre-structured nutrition data
+        workflow_result = await food_analysis_workflow.process_food_analysis(
+            image_data=None,  # No image data since we have structured data
+            barcode=barcode or nutrition_data.get("barcode"),
+            user_context=user_context,
+            integration_level=llm_integration_level.value,
+            prestructured_nutrition=nutrition_obj  # Pass pre-structured data
+        )
+        
+        # Check for workflow errors
+        if workflow_result.get("errors"):
+            logger.error(f"Nutrition analysis errors for user {current_user.id}: {workflow_result['errors']}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Analysis failed. Please check your nutrition data."
+            )
+        
+        # Save analysis to database
+        analysis_id = await _save_analysis_result(workflow_result, user_id, db, llm_integration_level.value)
+        
+        # Prepare response
+        health_analysis = workflow_result.get("health_analysis", {})
+        is_enhanced = health_analysis.get("enhanced_analysis", False)
+        
+        response_data = {
+            "analysis_id": str(analysis_id),
+            "product_name": nutrition_obj.product_name,
+            "overall_score": workflow_result.get("overall_score", 0),
+            "safety_level": workflow_result.get("safety_level", "unknown"),
+            "recommendations": workflow_result.get("recommendations", []),
+            "health_analysis": health_analysis,
+            "confidence_score": workflow_result.get("confidence_score", 0.8),  # Higher since data is structured
+            "processing_time_ms": workflow_result.get("processing_time_ms", 0),
+            "chat_context": workflow_result.get("chat_context", {}),
+            "analysis_summary": workflow_result.get("analysis_summary", ""),
+            # Enhanced LLM integration data
+            "enhanced_analysis": is_enhanced,
+            "integration_level": integration_level,
+            "llm_insights": _extract_llm_insights_summary(health_analysis) if is_enhanced else None,
+            "confidence_metrics": workflow_result.get("chat_context", {}).get("confidence_metrics", {}) if is_enhanced else None
+        }
+        
+        logger.info(f"{'Enhanced' if is_enhanced else 'Basic'} nutrition analysis completed for user {current_user.id}: {analysis_id} (level: {integration_level})")
+        
+        return JSONResponse(
+            status_code=status.HTTP_200_OK,
+            content=response_data
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Nutrition analysis error for user {user_id}: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Analysis failed due to an internal error. Please try again."
@@ -347,7 +480,7 @@ async def validate_nutrition_image(
         )
 
 
-async def _get_user_health_context(user_id: str, db: AsyncSession) -> UserHealthContext:
+async def _get_user_health_context(user_id: uuid.UUID, db: AsyncSession) -> UserHealthContext:
     """Get user's health context from database."""
     try:
         # Check cache first
@@ -420,7 +553,7 @@ async def _get_user_health_context(user_id: str, db: AsyncSession) -> UserHealth
         )
 
 
-async def _save_analysis_result(workflow_result: Dict[str, Any], user_id: str, db: AsyncSession, integration_level: str = "algorithmic_only") -> uuid.UUID:
+async def _save_analysis_result(workflow_result: Dict[str, Any], user_id: uuid.UUID, db: AsyncSession, integration_level: str = "algorithmic_only") -> uuid.UUID:
     """Save analysis result to database."""
     try:
         nutrition_data = workflow_result.get("nutrition_data", {})

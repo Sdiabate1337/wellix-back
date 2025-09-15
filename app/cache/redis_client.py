@@ -162,6 +162,17 @@ class RedisClient:
             logger.error(f"Redis INCREMENT error for key {key}: {e}")
             return None
     
+    async def ping(self) -> bool:
+        """Test la connexion au serveur Redis."""
+        try:
+            if not self.client:
+                await self.connect()
+            response = await self.client.ping()
+            return response is True
+        except Exception as e:
+            logger.error(f"Redis PING error: {e}")
+            return False
+    
     async def get_hash(self, key: str, field: str) -> Optional[Any]:
         """Get hash field value."""
         try:

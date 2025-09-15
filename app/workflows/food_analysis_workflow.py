@@ -3,11 +3,13 @@ LangGraph workflow for orchestrating the complete food analysis pipeline.
 """
 
 from typing import Dict, Any, List, Optional, TypedDict
-from langgraph import StateGraph, END
-from langgraph.graph import Graph
 import structlog
 import asyncio
 from datetime import datetime
+
+from langgraph.graph import StateGraph, END
+from langgraph.graph.graph import CompiledGraph
+from app.services.health_analyzers.analyzer_factory import LLMIntegrationLevel
 
 from app.models.health import NutritionData, UserHealthContext, AnalysisResult
 from app.services.ocr_service import ocr_service
@@ -54,23 +56,35 @@ class FoodAnalysisWorkflow:
     def __init__(self):
         self.graph = self._build_workflow_graph()
     
-    def _build_workflow_graph(self) -> Graph:
+    def _build_workflow_graph(self) -> CompiledGraph:
         """Build the LangGraph workflow graph."""
         
         # Create workflow graph
         workflow = StateGraph(WellixState)
         
         # Add nodes
+        workflow.add_node("route_entry", self._route_entry_node)
         workflow.add_node("ocr_extraction", self._ocr_extraction_node)
         workflow.add_node("barcode_lookup", self._barcode_lookup_node)
         workflow.add_node("data_enrichment", self._data_enrichment_node)
         workflow.add_node("nutrition_parsing", self._nutrition_parsing_node)
-        workflow.add_node("health_analysis", self._health_analysis_node)
+        workflow.add_node("health_analyzer", self._health_analysis_node)
         workflow.add_node("recommendation_generation", self._recommendation_generation_node)
         workflow.add_node("chat_context_preparation", self._chat_context_preparation_node)
         
         # Define workflow edges
-        workflow.set_entry_point("ocr_extraction")
+        workflow.set_entry_point("route_entry")
+        
+        # Route entry -> OCR extraction or Data enrichment (if nutrition data already provided)
+        workflow.add_conditional_edges(
+            "route_entry",
+            self._route_initial_step,
+            {
+                "ocr_extraction": "ocr_extraction",
+                "data_enrichment": "data_enrichment",
+                "error": END
+            }
+        )
         
         # OCR -> Barcode lookup (if barcode found) or Data enrichment
         workflow.add_conditional_edges(
@@ -90,10 +104,10 @@ class FoodAnalysisWorkflow:
         workflow.add_edge("data_enrichment", "nutrition_parsing")
         
         # Nutrition parsing -> Health analysis
-        workflow.add_edge("nutrition_parsing", "health_analysis")
+        workflow.add_edge("nutrition_parsing", "health_analyzer")
         
         # Health analysis -> Recommendation generation
-        workflow.add_edge("health_analysis", "recommendation_generation")
+        workflow.add_edge("health_analyzer", "recommendation_generation")
         
         # Recommendation generation -> Chat context preparation
         workflow.add_edge("recommendation_generation", "chat_context_preparation")
@@ -107,7 +121,9 @@ class FoodAnalysisWorkflow:
         self,
         image_data: Optional[bytes] = None,
         barcode: Optional[str] = None,
-        user_context: UserHealthContext = None
+        user_context: UserHealthContext = None,
+        integration_level: str = "algorithmic_only",
+        prestructured_nutrition: Optional[NutritionData] = None
     ) -> WellixState:
         """
         Process complete food analysis workflow.
@@ -126,10 +142,10 @@ class FoodAnalysisWorkflow:
         initial_state: WellixState = {
             "image_data": image_data,
             "barcode": barcode,
-            "user_context": user_context,
+            "user_context": user_context.dict() if user_context else None,
             "ocr_result": None,
             "openfoodfacts_data": None,
-            "nutrition_data": None,
+            "nutrition_data": prestructured_nutrition.dict() if prestructured_nutrition else None,
             "health_analysis": None,
             "overall_score": None,
             "safety_level": None,
@@ -247,11 +263,16 @@ class FoodAnalysisWorkflow:
         state["processing_steps"].append("nutrition_parsing")
         
         try:
+            # Skip if we already have structured nutrition data
+            if state.get("nutrition_data"):
+                logger.info("Using pre-structured nutrition data")
+                return state
+                
             enriched_data = state.get("enriched_nutrition_data", {})
             
-            # Create NutritionData object
-            nutrition_data = self._create_nutrition_data_object(enriched_data)
-            state["nutrition_data"] = nutrition_data
+            # Create NutritionData object and convert to dict for consistency
+            nutrition_data_obj = self._create_nutrition_data_object(enriched_data)
+            state["nutrition_data"] = nutrition_data_obj.dict()
             
             logger.info("Nutrition data parsing completed")
             
@@ -271,22 +292,22 @@ class FoodAnalysisWorkflow:
             return state
         
         try:
-            # Determine LLM integration level from user preferences
-            integration_level = state["user_context"].get("preferences", {}).get(
-                "llm_integration_level", 
-                LLMIntegrationLevel.HYBRID_BALANCED
-            )
+            # Recreate Pydantic objects from state dictionaries
+            nutrition_data_obj = NutritionData(**state["nutrition_data"])
+            user_context_obj = UserHealthContext(**state["user_context"])
+            
+            # Use default insight level - let the factory auto-select
+            insight_level = None
             
             # Convert string to enum if needed
-            if isinstance(integration_level, str):
-                integration_level = LLMIntegrationLevel(integration_level)
+            if isinstance(insight_level, str):
+                insight_level = LLMIntegrationLevel(insight_level)
             
             # Perform enhanced multi-profile health analysis
             enhanced_results = await EnhancedHealthAnalyzerFactory.analyze_for_user_enhanced(
-                nutrition_data=state["nutrition_data"],
-                user_context=state["user_context"],
-                integration_level=integration_level,
-                context_metadata={"integration_level": integration_level.value}
+                nutrition_data=nutrition_data_obj,
+                user_context=user_context_obj,
+                insight_level=insight_level
             )
             
             # Calculate overall enhanced score
@@ -313,7 +334,7 @@ class FoodAnalysisWorkflow:
                 "profile_results": serialized_results,
                 "overall_score": overall_score,
                 "safety_level": overall_safety,
-                "integration_level": integration_level.value,
+                "insight_level": "auto_selected" if insight_level is None else insight_level,
                 "enhanced_analysis": True
             }
             state["overall_score"] = overall_score
@@ -322,7 +343,7 @@ class FoodAnalysisWorkflow:
             state["enhanced_analysis"] = enhanced_results
             state["insight_level_used"] = enhanced_results.get("insight_level_used", "intelligent_auto_selection")
             
-            logger.info(f"Enhanced health analysis completed with overall score: {overall_score} (integration: {integration_level.value})")
+            logger.info(f"Enhanced health analysis completed with overall score: {overall_score} (insight level: auto-selected)")
             
         except Exception as e:
             error_msg = f"Enhanced health analysis failed: {str(e)}"
@@ -413,7 +434,7 @@ class FoodAnalysisWorkflow:
             
             # Check if enhanced analysis was used
             is_enhanced = state.get("health_analysis", {}).get("enhanced_analysis", False)
-            integration_level = state.get("health_analysis", {}).get("integration_level", "algorithmic_only")
+            insight_level = state.get("health_analysis", {}).get("insight_level", "auto_selected")
             
             # Prepare enhanced chat context
             chat_context = {
@@ -425,7 +446,7 @@ class FoodAnalysisWorkflow:
                 "analysis_summary": analysis_summary,
                 "confidence_score": state.get("confidence_score", 0.5),
                 "enhanced_analysis": is_enhanced,
-                "integration_level": integration_level,
+                "insight_level": insight_level,
                 "insight_level_used": state.get("insight_level_used", "intelligent_auto_selection")
             }
             
@@ -573,7 +594,7 @@ class FoodAnalysisWorkflow:
         overall_score = state.get("overall_score", 0)
         safety_level = state.get("safety_level", "unknown")
         is_enhanced = state.get("health_analysis", {}).get("enhanced_analysis", False)
-        integration_level = state.get("health_analysis", {}).get("integration_level", "algorithmic_only")
+        insight_level = state.get("health_analysis", {}).get("insight_level", "auto_selected")
         
         summary_parts = [
             f"{'Enhanced' if is_enhanced else 'Basic'} analysis of {product_name}:",
@@ -582,7 +603,7 @@ class FoodAnalysisWorkflow:
         ]
         
         if is_enhanced:
-            summary_parts.append(f"LLM integration: {integration_level.replace('_', ' ').title()}")
+            summary_parts.append(f"AI Insight level: {str(insight_level).replace('_', ' ').title()}")
         
         # Add key concerns from enhanced or basic analysis
         health_analysis = state.get("health_analysis", {})
@@ -644,6 +665,99 @@ class FoodAnalysisWorkflow:
             confidence_summary["llm_confidence"] = total_llm / count
         
         return confidence_summary
+
+    async def process_nutrition_analysis(
+        self,
+        nutrition_data: NutritionData,
+        user_context: UserHealthContext = None,
+        integration_level: str = "algorithmic_only"
+    ) -> Dict[str, Any]:
+        """
+        Process nutrition analysis workflow with pre-structured data.
+        
+        This method is optimized for mobile apps that have already performed OCR
+        and extracted structured nutrition data.
+        
+        Args:
+            nutrition_data: Pre-extracted nutrition information
+            user_context: User's health context and preferences
+            integration_level: AI enhancement level
+            
+        Returns:
+            Analysis results dictionary
+        """
+        start_time = datetime.utcnow()
+        
+        # Initialize state with structured data (skip OCR and data enrichment)
+        initial_state: WellixState = {
+            "image_data": None,
+            "barcode": nutrition_data.barcode,
+            "user_context": user_context,
+            "ocr_result": None,
+            "openfoodfacts_data": None,
+            "nutrition_data": nutrition_data.dict(),
+            "health_analysis": None,
+            "overall_score": None,
+            "safety_level": None,
+            "recommendations": None,
+            "processing_steps": ["nutrition_data_provided"],
+            "errors": [],
+            "processing_time_ms": None,
+            "confidence_score": 0.8,  # Higher confidence since data is structured
+            "analysis_summary": None,
+            "chat_context": None
+        }
+        
+        try:
+            # Execute targeted workflow (skip OCR and data enrichment steps)
+            # Start directly with health analysis
+            state = await self._health_analysis_node(initial_state)
+            
+            if not state.get("errors"):
+                state = await self._recommendation_generation_node(state)
+            
+            if not state.get("errors"):
+                state = await self._chat_context_preparation_node(state)
+            
+            # Calculate total processing time
+            end_time = datetime.utcnow()
+            processing_time = int((end_time - start_time).total_seconds() * 1000)
+            state["processing_time_ms"] = processing_time
+            
+            logger.info(f"Nutrition analysis workflow completed in {processing_time}ms")
+            return state
+            
+        except Exception as e:
+            logger.error(f"Nutrition analysis workflow failed: {e}")
+            initial_state["errors"].append(f"Workflow execution failed: {str(e)}")
+            return initial_state
+
+    async def _route_entry_node(self, state: WellixState) -> WellixState:
+        """Route entry node - determines workflow path based on available data."""
+        state["processing_steps"].append("route_entry")
+        logger.info("Determining workflow entry point")
+        return state
+
+    def _route_initial_step(self, state: WellixState) -> str:
+        """Route to appropriate initial step based on available data."""
+        # If nutrition data is already provided, skip OCR and go to data enrichment
+        if state.get("nutrition_data"):
+            logger.info("Nutrition data already provided, skipping OCR")
+            return "data_enrichment"
+        
+        # If image data is available, start with OCR
+        if state.get("image_data"):
+            logger.info("Image data provided, starting with OCR")
+            return "ocr_extraction"
+        
+        # If only barcode is provided, skip OCR and go to data enrichment
+        if state.get("barcode"):
+            logger.info("Only barcode provided, skipping OCR")
+            return "data_enrichment"
+        
+        # No valid input data
+        logger.error("No valid input data provided")
+        return "error"
 
 
 # Global workflow instance

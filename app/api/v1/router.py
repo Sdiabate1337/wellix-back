@@ -1,17 +1,22 @@
 """
-Main API v1 router that includes all endpoint routers.
+Main API v1 router with token management system.
 """
 
 from fastapi import APIRouter
-from app.api.v1 import auth, health_profiles, analysis, chat, websocket, llm_config
+from app.api.v1 import auth, health_profiles, chat, websocket, llm_config, tokens
 
 api_router = APIRouter()
 
-# Include all routers with their prefixes
 api_router.include_router(
     auth.router,
     prefix="/auth",
     tags=["authentication"]
+)
+
+api_router.include_router(
+    tokens.router,
+    prefix="/tokens",
+    tags=["token-management"]
 )
 
 api_router.include_router(
@@ -23,7 +28,7 @@ api_router.include_router(
 api_router.include_router(
     analysis.router,
     prefix="/analysis",
-    tags=["food-analysis"]
+    tags=["analysis-disabled"]
 )
 
 api_router.include_router(

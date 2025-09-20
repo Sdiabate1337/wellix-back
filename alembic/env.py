@@ -15,7 +15,7 @@ from app.core.config import settings
 from app.db.database import Base
 
 # Import all models to ensure they're registered with Base
-from app.db.models import user, health_profile, food_analysis, chat
+from app.db.models import user, health_profile, food_analysis, chat, token_system
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.

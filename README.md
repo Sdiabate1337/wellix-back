@@ -67,34 +67,382 @@ Once running, visit:
 
 ## API Endpoints
 
-### Authentication
-- `POST /api/v1/auth/register` - User registration
-- `POST /api/v1/auth/login` - User login
-- `POST /api/v1/auth/refresh` - Token refresh
-- `GET /api/v1/auth/profile` - User profile
-- `POST /api/v1/auth/logout` - User logout
+**Base URL:** `http://localhost:8000/api/v1`
 
-### Health Profiles
-- `POST /api/v1/health/profiles` - Create health profile
-- `GET /api/v1/health/profiles` - Get user profiles
-- `PUT /api/v1/health/profiles/{id}` - Update profile
-- `DELETE /api/v1/health/profiles/{id}` - Delete profile
-- `GET /api/v1/health/context` - Get health context
-- `PUT /api/v1/health/context` - Update health context
-- `GET /api/v1/health/recommendations` - Get recommendations
+### 🔐 Authentication (`/auth`)
 
-### Food Analysis
-- `POST /api/v1/analysis/scan-food` - Analyze food image
-- `GET /api/v1/analysis/{id}` - Get analysis results
-- `GET /api/v1/analysis/history` - Analysis history
-- `POST /api/v1/analysis/validate-image` - Validate food image
+#### Register User
+```bash
+POST /api/v1/auth/register
+Content-Type: application/json
 
-### AI Chat
-- `POST /api/v1/chat/message` - Send chat message
-- `GET /api/v1/chat/sessions` - Get chat sessions
-- `POST /api/v1/chat/sessions` - Create chat session
-- `GET /api/v1/chat/sessions/{id}/messages` - Get messages
-- `WebSocket /api/v1/ws/chat/{session_id}` - Real-time chat
+{
+  "email": "user@example.com",
+  "password": "SecurePass123!",
+  "first_name": "John",
+  "last_name": "Doe"
+}
+```
+
+**Response:**
+```json
+{
+  "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "refresh_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "token_type": "bearer",
+  "expires_in": 1800,
+  "user": {
+    "id": 1,
+    "email": "user@example.com",
+    "first_name": "John",
+    "last_name": "Doe"
+  }
+}
+```
+
+#### Login User
+```bash
+POST /api/v1/auth/login
+Content-Type: application/json
+
+{
+  "email": "user@example.com",
+  "password": "SecurePass123!"
+}
+```
+
+#### Refresh Token
+```bash
+POST /api/v1/auth/refresh
+Authorization: Bearer <refresh_token>
+```
+
+#### Logout
+```bash
+POST /api/v1/auth/logout
+Authorization: Bearer <access_token>
+```
+
+### 🏥 Health Profiles (`/health`)
+
+#### Create Health Profile
+```bash
+POST /api/v1/health/profiles
+Authorization: Bearer <access_token>
+Content-Type: application/json
+
+{
+  "profile_type": "diabetes",
+  "severity": "moderate",
+  "restrictions": ["sugar", "refined_carbs"],
+  "goals": ["blood_sugar_control", "weight_management"],
+  "medications": ["metformin"],
+  "is_primary": true,
+  "target_values": {
+    "hba1c": 7.0,
+    "fasting_glucose": 100.0
+  }
+}
+```
+
+#### Get Health Profiles
+```bash
+GET /api/v1/health/profiles
+Authorization: Bearer <access_token>
+```
+
+#### Update Health Context
+```bash
+PUT /api/v1/health/context
+Authorization: Bearer <access_token>
+Content-Type: application/json
+
+{
+  "age_group": "adult",
+  "activity_level": "moderate",
+  "weight_goals": "maintain",
+  "height_cm": 175.0,
+  "weight_kg": 70.0,
+  "allergies": ["nuts", "dairy"],
+  "dietary_preferences": ["vegetarian"],
+  "preferred_language": "fr"
+}
+```
+
+#### Get Health Context
+```bash
+GET /api/v1/health/context
+Authorization: Bearer <access_token>
+```
+
+#### Get Health Recommendations
+```bash
+GET /api/v1/health/recommendations
+Authorization: Bearer <access_token>
+```
+
+### 🔬 Food Analysis (`/analysis`)
+
+#### Scan Food Product (Principal Endpoint)
+```bash
+POST /api/v1/analysis/scan-food
+Authorization: Bearer <access_token>
+Content-Type: multipart/form-data
+
+--form 'image=@/path/to/food_image.jpg'
+--form 'barcode=3017620422003'
+--form 'integration_level=expert_analysis'
+```
+
+**Response:**
+```json
+{
+  "analysis_id": "550e8400-e29b-41d4-a716-446655440000",
+  "product": {
+    "name": "Nutella",
+    "brand": "Ferrero",
+    "barcode": "3017620422003"
+  },
+  "nutrition": {
+    "energy_kcal": 539,
+    "fat": 30.9,
+    "saturated_fat": 10.6,
+    "carbohydrates": 57.5,
+    "sugars": 56.3,
+    "fiber": 1.9,
+    "protein": 6.3,
+    "salt": 0.107
+  },
+  "health_analysis": {
+    "diabetes": {
+      "score": 2,
+      "risk_level": "high",
+      "recommendations": [
+        "Évitez ce produit en raison de sa très haute teneur en sucres",
+        "Choisissez des alternatives sans sucre ajouté"
+      ]
+    }
+  },
+  "overall_score": 2,
+  "recommendation": "avoid",
+  "ai_insights": "Ce produit contient 56.3g de sucres pour 100g..."
+}
+```
+
+#### Analyze Nutrition Data
+```bash
+POST /api/v1/analysis/analyze-nutrition
+Authorization: Bearer <access_token>
+Content-Type: application/json
+
+{
+  "nutrition_data": {
+    "energy_kcal": 350,
+    "carbohydrates": 45.0,
+    "sugars": 5.0,
+    "fiber": 8.0,
+    "protein": 12.0,
+    "fat": 15.0,
+    "salt": 1.2
+  },
+  "product_name": "Whole grain bread"
+}
+```
+
+#### Get Analysis History
+```bash
+GET /api/v1/analysis/history?limit=10&offset=0
+Authorization: Bearer <access_token>
+```
+
+#### Get Specific Analysis
+```bash
+GET /api/v1/analysis/{analysis_id}
+Authorization: Bearer <access_token>
+```
+
+#### Validate Food Image
+```bash
+POST /api/v1/analysis/validate-image
+Authorization: Bearer <access_token>
+Content-Type: multipart/form-data
+
+--form 'image=@/path/to/image.jpg'
+```
+
+### 💬 AI Chat (`/chat`)
+
+#### Send Chat Message
+```bash
+POST /api/v1/chat/message
+Authorization: Bearer <access_token>
+Content-Type: application/json
+
+{
+  "message": "Est-ce que je peux manger ce produit avec mon diabète ?",
+  "context": {
+    "analysis_id": "550e8400-e29b-41d4-a716-446655440000"
+  }
+}
+```
+
+#### Get Chat Sessions
+```bash
+GET /api/v1/chat/sessions
+Authorization: Bearer <access_token>
+```
+
+#### WebSocket Chat
+```bash
+ws://localhost:8000/api/v1/ws/chat/{session_id}?token=<access_token>
+```
+
+### 🔧 LLM Configuration (`/llm`)
+
+#### Get Available Models
+```bash
+GET /api/v1/llm/models
+Authorization: Bearer <access_token>
+```
+
+#### Update LLM Configuration
+```bash
+PUT /api/v1/llm/config
+Authorization: Bearer <access_token>
+Content-Type: application/json
+
+{
+  "default_model": "gpt-4",
+  "temperature": 0.7,
+  "max_tokens": 1000
+}
+```
+
+## 🚀 Complete User Workflow
+
+### 1. User Registration & Authentication
+```bash
+# 1. Register a new user
+curl -X POST "http://localhost:8000/api/v1/auth/register" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "email": "test@example.com",
+    "password": "SecurePass123!",
+    "first_name": "Test",
+    "last_name": "User"
+  }'
+
+# 2. Login to get access token
+curl -X POST "http://localhost:8000/api/v1/auth/login" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "email": "test@example.com",
+    "password": "SecurePass123!"
+  }'
+```
+
+### 2. Health Profile Setup
+```bash
+# 3. Create diabetes health profile
+curl -X POST "http://localhost:8000/api/v1/health/profiles" \
+  -H "Authorization: Bearer <access_token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "profile_type": "diabetes",
+    "severity": "moderate",
+    "restrictions": ["sugar", "refined_carbs"],
+    "goals": ["blood_sugar_control"],
+    "is_primary": true,
+    "target_values": {"hba1c": 7.0}
+  }'
+
+# 4. Update health context
+curl -X PUT "http://localhost:8000/api/v1/health/context" \
+  -H "Authorization: Bearer <access_token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "age_group": "adult",
+    "activity_level": "moderate",
+    "weight_kg": 70.0,
+    "height_cm": 175.0,
+    "preferred_language": "fr"
+  }'
+```
+
+### 3. Food Product Analysis
+```bash
+# 5. Analyze a food product
+curl -X POST "http://localhost:8000/api/v1/analysis/scan-food" \
+  -H "Authorization: Bearer <access_token>" \
+  -F "image=@./food_image.jpg" \
+  -F "barcode=3017620422003" \
+  -F "integration_level=expert_analysis"
+```
+
+### 4. View Results & Chat
+```bash
+# 6. Get analysis history
+curl -X GET "http://localhost:8000/api/v1/analysis/history" \
+  -H "Authorization: Bearer <access_token>"
+
+# 7. Ask AI about the product
+curl -X POST "http://localhost:8000/api/v1/chat/message" \
+  -H "Authorization: Bearer <access_token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "message": "Est-ce que je peux manger ce produit avec mon diabète ?",
+    "context": {"analysis_id": "<analysis_id>"}
+  }'
+```
+
+## 📊 Response Examples
+
+### Health Analysis Response
+```json
+{
+  "analysis_id": "550e8400-e29b-41d4-a716-446655440000",
+  "product": {
+    "name": "Nutella",
+    "brand": "Ferrero",
+    "categories": ["spreads", "sweet-spreads"]
+  },
+  "nutrition": {
+    "energy_kcal": 539,
+    "fat": 30.9,
+    "saturated_fat": 10.6,
+    "carbohydrates": 57.5,
+    "sugars": 56.3,
+    "fiber": 1.9,
+    "protein": 6.3,
+    "salt": 0.107
+  },
+  "health_analysis": {
+    "diabetes": {
+      "score": 2,
+      "risk_level": "high",
+      "key_concerns": [
+        "Très haute teneur en sucres (56.3g/100g)",
+        "Index glycémique élevé",
+        "Portion recommandée très limitée"
+      ],
+      "recommendations": [
+        "❌ À éviter : Teneur en sucres excessive pour le diabète",
+        "🔄 Alternative : Purée d'amandes sans sucre ajouté",
+        "⚠️ Si consommation : Maximum 1 cuillère à café (5g)"
+      ],
+      "portion_guidance": {
+        "max_portion": "5g",
+        "frequency": "exceptionnel",
+        "timing": "après activité physique"
+      }
+    }
+  },
+  "overall_score": 2,
+  "recommendation": "avoid",
+  "ai_insights": "En tant que nutritionniste spécialisé, je dois vous déconseiller fortement ce produit...",
+  "created_at": "2025-09-17T10:30:00Z"
+}
+```
 
 ## Architecture
 

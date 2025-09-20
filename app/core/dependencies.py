@@ -9,15 +9,27 @@ from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
 
 from app.core.security import security_manager
-from app.db.database import get_async_session
+from app.db.database import get_async_session, SessionLocal
 from app.db.models.user import User
 from app.cache.cache_manager import cache_manager
 from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 logger = structlog.get_logger(__name__)
 
 # Security scheme
 security = HTTPBearer()
+
+
+def get_db() -> Generator[Session, None, None]:
+    """
+    Get synchronous database session for testing and migrations.
+    """
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
 
 
 async def get_current_user(

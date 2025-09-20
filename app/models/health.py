@@ -87,6 +87,40 @@ class HealthProfile(BaseModel):
         return v
 
 
+class Demographics(BaseModel):
+    """User demographic information for health analysis."""
+    
+    age: int = Field(ge=1, le=120, description="User age in years")
+    gender: Optional[str] = Field(None, description="User gender")
+    weight: Optional[float] = Field(None, ge=20, le=500, description="Weight in kg")
+    height: Optional[float] = Field(None, ge=50, le=250, description="Height in cm")
+    activity_level: ActivityLevel = Field(ActivityLevel.MODERATELY_ACTIVE, description="Physical activity level")
+    
+    @property
+    def age_group(self) -> AgeGroup:
+        """Determine age group based on age."""
+        if self.age <= 12:
+            return AgeGroup.CHILD
+        elif self.age <= 17:
+            return AgeGroup.TEEN
+        elif self.age <= 30:
+            return AgeGroup.YOUNG_ADULT
+        elif self.age <= 50:
+            return AgeGroup.ADULT
+        elif self.age <= 65:
+            return AgeGroup.MIDDLE_AGED
+        else:
+            return AgeGroup.SENIOR
+    
+    @property
+    def bmi(self) -> Optional[float]:
+        """Calculate BMI if weight and height are available."""
+        if self.weight and self.height:
+            height_m = self.height / 100
+            return round(self.weight / (height_m ** 2), 1)
+        return None
+
+
 class UserHealthContext(BaseModel):
     """Complete user health context for personalized analysis."""
     
